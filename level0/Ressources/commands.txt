@@ -1,0 +1,12 @@
+file level0
+ls -l level0
+cp level0 /tmp/level0_debug
+chmod +x /tmp/level0_debug
+# debug steps (example)
+gdb -q /tmp/level0_debug -ex "run" -ex "bt full" -ex "info registers"
+# exploit steps
+./level0 423
+whoami
+id
+ls -la /home/user/level1
+cat /home/user/level1/.pass

@@ -1,0 +1,55 @@
+Walkthrough: Exploiting level0 to obtain level1 .pass
+
+
+1. Inspect the binary metadata
+$ file level0
+-> level0 is a setuid 32-bit ELF owned by level1.
+
+
+2. Run without arguments
+$ ./level0
+-> Segmentation fault (program calls atoi(argv[1]) with argv[1] == NULL).
+
+
+3. Debug a non-setuid copy to inspect main()
+# copy to /tmp so gdb can run safely
+$ cp level0 /tmp/level0_debug
+$ chmod +x /tmp/level0_debug
+$ gdb -q /tmp/level0_debug
+(run and examine backtrace and disassembly)
+
+
+Observed: main does atoi(argv[1]) and compares the result to 0x1A7 (423 decimal):
+call atoi
+cmp eax, 0x1A7
+
+
+If equal, program does:
+strdup(constant_path)
+setresgid(getegid(), getegid(), getegid())
+setresuid(geteuid(), geteuid(), geteuid())
+execv(duplicated_path, &duplicated_path)
+
+
+So providing the magic number causes the program to exec a shell as the binary owner (level1).
+
+
+4. Exploit
+Run the setuid binary with the magic number 423:
+$ ./level0 423
+This spawns a shell running as 'level1'. Verify:
+$ whoami -> level1
+$ id -> shows uid=2030(level1)
+
+
+5. Read the flag
+The .pass file for level1 is at `/home/user/level1/.pass`
+$ cat /home/user/level1/.pass
+-> contains the string (257-bit sha-like hex):
+1fe8a524fa4bec01ca4ea2a869af2a02260d4a7d5fe7e7c24d8617e6dca12d3a
+
+
+6. Notes and recommendations
+- Never debug setuid binaries in-place: copy them and debug the copy.
+- Validate argv before using it (check argc) to avoid atoi(NULL).
+- Do not create setuid programs that exec an interactive shell without strong input validation.
