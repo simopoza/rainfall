@@ -1,0 +1,27 @@
+# Resources — Level1
+
+This directory contains links, tools, and notes used while solving level1.
+
+## Tools
+
+* GDB — GNU Debugger (used for dynamic analysis and disassembly)
+* objdump / readelf — static binary inspection
+* Pattern generator — [https://wiremask.eu/tools/buffer-overflow-pattern-generator/](https://wiremask.eu/tools/buffer-overflow-pattern-generator/) (used to generate cyclic pattern and compute offset)
+* Python — for constructing payloads and quick one-liners
+* pwntools (optional) — excellent for dev/testing: `pip install pwntools`
+
+## Useful Reads / Tutorials
+
+* Corelan Exploit Development series — practical buffer overflow tutorials
+* Pwntools docs — [https://docs.pwntools.com/](https://docs.pwntools.com/)
+* Classic CTF writeups & Exploit Education (Protostar)
+
+## Notes
+
+* Offset discovered: **76** bytes
+* Target function: `run` at `0x08048444` (little-endian `\x44\x84\x04\x08`)
+* Keep stdin open (e.g., with `cat`) to interact with spawned shell after exploitation.
+
+## Safety
+
+Only practice these techniques on environments you own or have permission to test. Unauthorized exploitation is illegal.

