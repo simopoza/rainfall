@@ -1,0 +1,10 @@
+# important disassembly excerpt (addresses may differ):
+call atoi
+cmp eax, 0x1A7
+je <then branch>
+strdup(<address pointing to "/bin/sh">)
+call getegid
+call geteuid
+call setresgid
+call setresuid
+call execv

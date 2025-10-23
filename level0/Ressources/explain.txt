@@ -1,0 +1,3 @@
+Short explanation and mitigation:
+- Vulnerability: program called atoi() on argv[1] without verifying argc, causing a crash with no args. More importantly, when a specific integer (423) is given it execs a shell as the binary owner (setuid), which was an intended escalation path for the exercise.
+- Mitigation: validate argc before using argv; avoid setuid programs that exec shells; use least privilege and audit setuid binaries.

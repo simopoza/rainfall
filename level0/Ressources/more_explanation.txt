@@ -1,0 +1,70 @@
+1) Why did the program crash when run with no arguments?
+
+Because main called atoi(argv[1]) without checking argc. If you run the program with no arguments, argv[1] is NULL. atoi(NULL) internally calls strtol(NULL, ...), which dereferences the pointer and causes a segmentation fault.
+Lesson: always check argc before using argv[n].
+
+2) Why did giving the number 423 give me a shell as level1?
+
+Disassembly showed main does:
+
+eax = atoi(argv[1])
+
+if (eax == 0x1A7) (0x1A7 == 423)
+If equal, it:
+
+duplicatess a constant string (the executable path, usually /bin/sh),
+
+calls getegid() / geteuid() then setresgid(...) / setresuid(...) to assume the binary owner’s IDs,
+
+calls execv(path, &path) — executing the shell binary as the owner of level0 (which is level1).
+Because level0 is setuid (owned by level1 and with the setuid bit), when it calls setresuid/getresgid and execs a shell, that shell runs with level1 privileges.
+
+3) Why copy the binary to /tmp before debugging?
+
+Debugging a setuid binary in-place is often restricted by the kernel (and unsafe). Copying it to /tmp removes the setuid bit on the copy, so gdb can run it normally without special kernel protections. This lets you inspect behavior without accidentally granting yourself elevated capabilities during debugging and avoids dropping privileges or getting blocked by the system.
+
+4) What are setresuid / setresgid doing and why are they used here?
+
+setresuid(ruid, euid, suid) and setresgid(rgid, egid, sgid) set the real/effective/saved UIDs and GIDs of the process. The program calls them with the binary’s effective IDs (the owner IDs) to adopt the owner’s identity permanently, so the subsequent execv runs the new program as that owner (level1). This is the controlled privilege escalation the challenge intends.
+
+5) Why execv(path, &path)? What’s with passing a pointer to the path?
+
+execv expects an argv array (a NULL-terminated char * const argv[]). The binary does strdup(path) and then calls execv(p, &p). That effectively provides an argv list where argv[0] == p and argv[1] == NULL. execv will treat that as a program invoked with only its own name — a valid minimal argv.
+
+6) Why was NX enabled/No RELRO/No canary relevant?
+
+When a binary has memory protections disabled (no stack canary, no RELRO) and has a fixed base (no PIE), buffer-overflow style exploits are easier. For this level the path to privilege was intentional and simple (magic-number check + exec), so we didn’t need to exploit a buffer overflow. But for future levels, these properties hint at possible exploitation vectors (ret2libc, ROP, GOT overwrite, etc.).
+
+7) How to find the exact string the binary execs (e.g. /bin/sh)?
+
+Options:
+
+Use strings level0 (if available) and search for /bin/sh. (On your VM strings seemed broken.)
+
+Use gdb on the non-setuid copy and x/s 0x80c5348 with the address shown in disassembly to print the C-string.
+
+Or compute file offset from readelf -l and dd to dump the bytes at that virtual address.
+We did the gdb method earlier and confirmed /bin/sh was the string used.
+
+8) What should I write in the report to show proof?
+
+Include:
+
+file and ls -l outputs showing the binary is setuid and owned by level1.
+
+GDB disassembly snippet showing atoi, the cmp to 0x1A7, the setresuid/setresgid calls, and execv.
+
+The whoami/id after running ./level0 423.
+
+The contents of /home/user/level1/.pass.
+We prepared all of that in the Ressources folder and proof.txt.
+
+9) Security note — is this realistic?
+
+This is a deliberately vulnerable exercise. In a real system:
+
+setuid programs should validate arguments and minimize actions done with elevated privileges,
+
+avoid execing an interactive shell as root/another user,
+
+follow least privilege principles.
