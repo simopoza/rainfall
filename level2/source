@@ -1,0 +1,29 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+void p(void)
+{
+    char buffer[76];  // Buffer at -0x4c from ebp (76 bytes)
+    unsigned int ret_addr;
+    
+    fflush(stdout);
+    gets(buffer);  // VULNERABILITY: No bounds checking!
+    
+    ret_addr = *(unsigned int *)(((char *)&ret_addr) + 4);  // Get return address from stack
+    
+    // Check if return address is in stack (0xbXXXXXXX range)
+    if ((ret_addr & 0xb0000000) == 0xb0000000) {
+        printf("(%p)\n", (void *)ret_addr);
+        _exit(1);
+    }
+    
+    puts(buffer);
+    strdup(buffer);  // This allocates memory on heap
+}
+
+int main(void)
+{
+    p();
+    return 0;
+}

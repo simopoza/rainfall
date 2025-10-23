@@ -1,0 +1,51 @@
+# Level2 Exploitation Walkthrough
+
+## Summary
+- **Vulnerability**: Buffer overflow in `gets()` function
+- **Protection**: Stack address detection (blocks 0xbXXXXXXX addresses)
+- **Bypass**: Heap shellcode injection via `strdup()`
+- **Offset**: 80 bytes to control EIP
+- **Heap Address**: 0x804a008
+
+## Step-by-Step Exploitation
+
+### 1. Analysis Results
+```bash
+# Buffer overflow confirmed
+Offset to EIP: 80 bytes
+Heap address: 0x804a008 (bypasses stack protection)
+```
+
+### 2. Exploit Strategy
+- Place shellcode at beginning of payload
+- Pad to reach return address (offset 80)
+- Overwrite return address with heap address (0x804a008)
+- When function returns, execution jumps to our shellcode on heap
+
+### 3. Payload Structure
+```
+[SHELLCODE (25 bytes)] + [PADDING (51 bytes)] + [SAVED_EBP (4 bytes)] + [HEAP_ADDR (4 bytes)]
+```
+
+### 4. Execution
+```bash
+# Method 1: Direct execution
+python exploit.py | ./level2
+
+# Method 2: With cat to keep shell alive
+(python exploit.py; cat) | ./level2
+
+# Method 3: Save to file and redirect
+python exploit.py > payload
+./level2 < payload
+```
+
+### 5. Expected Result
+- Shell spawned with level3 privileges
+- Access to /home/user/level3/.pass
+- Flag for next level obtained
+
+## Notes
+- Shellcode is 25 bytes (execve("/bin/sh"))
+- Heap address is consistent (ASLR likely disabled)
+- Stack protection only checks return address, not shellcode location

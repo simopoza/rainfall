@@ -1,0 +1,28 @@
+# LEVEL2 - SUCCESSFUL EXPLOITATION
+
+## Flag Obtained
+```
+492deb0e7d14c4b5695173cca843c4384fe52d0857c2b0718e1a521a4d33ec02
+```
+
+## Working Exploit
+File: `careful_exploit.py`
+- **Method**: Heap shellcode injection
+- **Vulnerability**: Buffer overflow in `gets()` function
+- **Offset**: 80 bytes (76 bytes to saved EBP + 4 bytes EBP)
+- **Bypass**: Stack protection only blocks 0xbXXXXXXX addresses, heap (0x804a008) allowed
+- **Shellcode**: 21-byte execve("/bin/sh") at heap start
+- **Success**: Level3 shell spawned, flag retrieved
+
+## Key Lessons Learned
+1. **Precise offset calculation**: 80 bytes total (not 74)
+2. **Stack protection bypass**: Use heap addresses (0x08...) not libc (0xb7...)
+3. **Clean payload**: Remove all debug output for binary exploits
+4. **Persistence**: Keep trying different approaches and shellcode variants
+
+## Final Working Command
+```bash
+(python2 /tmp/careful_exploit.py; cat) | ./level2
+```
+
+Level2 COMPLETED! 🎉
