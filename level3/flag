@@ -1,0 +1,35 @@
+# LEVEL3 - SUCCESSFUL EXPLOITATION
+
+## Flag Obtained
+```
+b209ea91ad69ef36f2cf0fcbbc24c739fd10464cf545b20bea8572ebdc3c36fa
+```
+
+## Exploitation Summary
+- **Vulnerability**: Format String Bug in `printf(buffer)`
+- **Method**: Write-What-Where attack using `%n` format specifier
+- **Target**: Global variable at `0x804988c` (must equal 64)
+- **Attack Vector**: `%4$n` writes character count to stack position 4
+- **Payload Structure**: `[ADDRESS][PADDING][%4$n]`
+- **Result**: Level4 shell spawned successfully
+
+## Privilege Verification
+```
+whoami: level4
+id: uid=2022(level3) gid=2022(level3) euid=2025(level4) egid=100(users)
+```
+**Effective UID**: 2025 (level4) ✓ - SUID escalation successful
+
+## Working Exploit Command
+```bash
+(python2 exploit.py; cat) | ./level3
+```
+
+## Technical Details
+- **Stack Position**: Our input appears at position 4
+- **Character Count**: Exactly 64 characters printed before `%n`  
+- **Memory Write**: Successfully wrote value 64 to `0x804988c`
+- **Condition Triggered**: Global variable check passed
+- **System Call**: `system("/bin/sh")` executed with level4 privileges
+
+Level3 COMPLETED! 🎉

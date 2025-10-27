@@ -1,0 +1,29 @@
+#include <stdio.h>
+#include <stdlib.h>
+
+// Global variables (from .bss section)
+unsigned int m = 0;  // At address 0x804988c - must be set to 64 for exploit
+
+void v(void)
+{
+    char buffer[520];  // Large buffer at EBP-520
+    
+    // Read up to 512 bytes from stdin (safe with fgets)
+    fgets(buffer, 512, stdin);
+    
+    // FORMAT STRING VULNERABILITY: User input used directly as format string
+    printf(buffer);
+    
+    // Check global variable 'm'
+    if (m == 64) {  // 0x40 in hex
+        // If condition met, execute system command
+        fwrite("Wait what?!\n", 12, 1, stdout);
+        system("/bin/sh");  // Spawn shell with level4 privileges!
+    }
+}
+
+int main(void)
+{
+    v();
+    return 0;
+}

