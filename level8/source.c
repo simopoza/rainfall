@@ -14,7 +14,7 @@ int main()
     while (1) {
         // Print current pointer values
         printf("%p, %p \n", auth, service);
-        
+
         // Read command from stdin
         if (fgets(buffer, 128, stdin) == NULL)
             break;
